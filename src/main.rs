@@ -135,7 +135,6 @@ async fn download_jar(coord: &MavenCoordinate, version: &str) -> anyhow::Result<
     let bytes = response.bytes().await?;
     fs::write(&local_path, bytes)?;
 
-    println!("downloaded {} to {:?}", jar_path, local_path);
     Ok(())
 }
 
@@ -177,6 +176,15 @@ async fn download_pom(coord: &MavenCoordinate, version: &str) -> anyhow::Result<
     Ok(text)
 }
 
+async fn get_latest_version(coord: &MavenCoordinate) -> anyhow::Result<String> {
+    let artifact_info = fetch_artifact_info(coord).await?;
+    if artifact_info.is_empty() {
+        anyhow::bail!("could not find artifact for {}:{}", coord.group_id, coord.group_id)
+    }
+
+    Ok(artifact_info[0].v.clone())
+}
+
 async fn resolve_dependencies(coord: &MavenCoordinate, version: &str) -> anyhow::Result<()> {
     let mut queue = VecDeque::new();
     let mut seen = HashSet::new();
@@ -191,19 +199,23 @@ async fn resolve_dependencies(coord: &MavenCoordinate, version: &str) -> anyhow:
         }
         seen.insert(key);
 
-        // resolve current dependency
         download_jar(&dep_coord, &*dep_version).await?;
         let pom = download_pom(&dep_coord, &*dep_version).await?;
-        println!("pom: {}", pom);
         let project: Project = from_str(&pom)?;
-        println!("project deps: {:?}", project);
         for dep in project.dependencies.dependency {
             if dep.scope != "test" {
-                download_jar(&MavenCoordinate {
+                let dep_coord = &MavenCoordinate {
                     group_id: dep.group_id,
                     artifact_id: dep.artifact_id,
-                    version: Some(dep.version.clone())
-                }, &dep.version).await?
+                    version: dep.version.clone()
+                };
+
+                let resolved_version = match dep.version {
+                    Some(v) => v,
+                    None => get_latest_version(dep_coord).await?
+                };
+
+                queue.push_back((dep_coord.clone(), resolved_version))
             }
         }
     }

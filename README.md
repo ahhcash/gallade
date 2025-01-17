@@ -1,3 +1,3 @@
-# Gallade - a blazing fast dependency manager for Java
+# Gallade - a dependency manager for Java
 
 let me see what i can build with this
