@@ -1,10 +1,16 @@
-use std::collections::{HashSet, VecDeque};
-use std::error::Error;
-use std::fs;
-use std::path::PathBuf;
+mod coordinates;
+mod projects;
+mod repository;
+mod download;
+mod resolver;
+
 use clap::{Parser, Subcommand};
-use quick_xml::de::from_str;
-use serde::{Deserialize, Serialize};
+use coordinates::Coordinate;
+use download::RepositoryManager;
+use projects::Project;
+use repository::Repository;
+use resolver::DependencyResolver;
+use std::collections::HashSet;
 
 #[derive(Parser, Debug)]
 struct Cli {
@@ -12,241 +18,138 @@ struct Cli {
     command: Commands
 }
 
-#[derive(Debug, Clone)]
-struct MavenCoordinate {
-    group_id: String,
-    artifact_id: String,
-    version: Option<String>,
-}
-
-impl MavenCoordinate {
-    fn parse(coord: &str) -> anyhow::Result<Self> {
-        let parts: Vec<&str> = coord.split(':').collect();
-        match parts.len() {
-            2 => Ok(Self {
-                group_id: parts[0].to_string(),
-                artifact_id: parts[1].to_string(),
-                version: None,
-            }),
-            3 => Ok(Self {
-                group_id: parts[0].to_string(),
-                artifact_id: parts[1].to_string(),
-                version: Some(parts[2].to_string()),
-            }),
-            _ => anyhow::bail!("invalid maven coordinate format")
-        }
-    }
-
-    fn to_path(&self) -> String {
-        format!(
-            "{}/{}",
-            self.group_id.replace('.', "/"),
-            self.artifact_id
-        )
-    }
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct MavenResponse {
-    response: SearchResponse,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct SearchResponse {
-    docs: Vec<ArtifactDoc>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct ArtifactDoc {
-    g: String,
-    a: String,
-    v: String,
-    p: String,
-    timestamp: i64,
-}
-
-#[derive(Debug, Deserialize)]
-struct Project {
-    #[serde(default)]
-    dependencies: Dependencies,
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct Dependencies {
-    #[serde(default)]
-    dependency: Vec<Dependency>,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-struct Dependency {
-    #[serde(rename = "groupId")]
-    group_id: String,
-    #[serde(rename = "artifactId")]
-    artifact_id: String,
-    version: Option<String>,
-    #[serde(default)]
-    scope: String,
-}
-
 #[derive(Subcommand, Debug)]
 enum Commands {
     Add {
-        coordinate: String
+        coordinate: String,
+        #[arg(short, long)]
+        dev: bool,
     },
     Remove {
         coordinate: String
-    }
+    },
+    List {
+        coordinate: String
+    },
+    Search {
+        coordinate: String
+    },
+    Tree {
+        #[arg(short, long)]
+        detailed: bool,
+    },
 }
 
-async fn fetch_artifact_info(coord: &MavenCoordinate) -> anyhow::Result<Vec<ArtifactDoc>> {
-    let client = reqwest::Client::builder()
-        .user_agent("gallade/0.1.0")
-        .build()?;
-    let url = format!(
-        "https://search.maven.org/solrsearch/select?q=g:{}+AND+a:{}&core=gav&rows=20&wt=json",
-        urlencoding::encode(&coord.group_id),
-        urlencoding::encode(&coord.artifact_id)
-    );
+// Helper function to print a dependency tree
+fn print_tree(
+    coord: &Coordinate,
+    version: &str,
+    seen: &mut HashSet<String>,
+    depth: usize,
+    detailed: bool,
+) {
+    let key = format!("{}:{}", coord, version);
+    let prefix = "  ".repeat(depth);
 
-    let response = client.get(&url).send().await?.json::<MavenResponse>().await?;
-    Ok(response.response.docs)
-}
-
-async fn download_jar(coord: &MavenCoordinate, version: &str) -> anyhow::Result<()> {
-    let client = reqwest::Client::builder()
-        .user_agent("gallade/0.1.0")
-        .build()?;    let jar_path = format!("{}-{}.jar", coord.artifact_id, version);
-    let url = format!(
-        "https://search.maven.org/remotecontent?filepath={}/{}/{}/{}",
-        coord.group_id.replace('.', "/"),
-        coord.artifact_id,
-        version,
-        jar_path
-    );
-
-    let local_path = get_local_path(coord, version, &jar_path)?;
-
-    // create parent dirs
-    if let Some(parent) = local_path.parent() {
-        fs::create_dir_all(parent)?;
+    // Print with or without version based on detailed flag
+    if detailed {
+        println!("{}{}:{}", prefix, coord, version);
+    } else {
+        println!("{}{}", prefix, coord);
     }
 
-    let response = client.get(&url).send().await?;
-    let bytes = response.bytes().await?;
-    fs::write(&local_path, bytes)?;
+    // Track what we've seen to handle cycles
+    seen.insert(key);
 
-    Ok(())
-}
-
-fn get_local_path(coord: &MavenCoordinate, version: &str, filename: &str) -> anyhow::Result<PathBuf> {
-    let home = std::env::var("HOME")?;
-    let path = format!(
-        "{}/.m2/repository/{}/{}/{}/{}",
-        home,
-        coord.group_id.replace('.', "/"),
-        coord.artifact_id,
-        version,
-        filename
-    );
-    Ok(PathBuf::from(path))
-}
-
-async fn download_pom(coord: &MavenCoordinate, version: &str) -> anyhow::Result<String> {
-    let client = reqwest::Client::builder()
-        .user_agent("gallade/0.1.0")
-        .build()?;    let pom_path = format!("{}-{}.pom", coord.artifact_id, version);
-    let url = format!(
-        "https://search.maven.org/remotecontent?filepath={}/{}/{}/{}",
-        coord.group_id.replace('.', "/"),
-        coord.artifact_id,
-        version,
-        pom_path
-    );
-
-    let local_path = get_local_path(coord, version, &pom_path)?;
-
-    if let Some(parent) = local_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
-    let response = client.get(&url).send().await?;
-    let text = response.text().await?;
-    fs::write(&local_path, &text)?;
-
-    Ok(text)
-}
-
-async fn get_latest_version(coord: &MavenCoordinate) -> anyhow::Result<String> {
-    let artifact_info = fetch_artifact_info(coord).await?;
-    if artifact_info.is_empty() {
-        anyhow::bail!("could not find artifact for {}:{}", coord.group_id, coord.group_id)
-    }
-
-    Ok(artifact_info[0].v.clone())
-}
-
-async fn resolve_dependencies(coord: &MavenCoordinate, version: &str) -> anyhow::Result<()> {
-    let mut queue = VecDeque::new();
-    let mut seen = HashSet::new();
-
-    // pushing back initial dependency
-    queue.push_back((coord.clone(), version.to_string()));
-    // doing some BFS
-    while let Some((dep_coord, dep_version)) = queue.pop_front() {
-        let key = format!("{}:{}:{}", dep_coord.group_id, dep_coord.artifact_id, dep_version);
-        if seen.contains(&key) {
-            continue;
-        }
-        seen.insert(key);
-
-        download_jar(&dep_coord, &*dep_version).await?;
-        let pom = download_pom(&dep_coord, &*dep_version).await?;
-        let project: Project = from_str(&pom)?;
-        for dep in project.dependencies.dependency {
-            if dep.scope != "test" {
-                let dep_coord = &MavenCoordinate {
-                    group_id: dep.group_id,
-                    artifact_id: dep.artifact_id,
-                    version: dep.version.clone()
-                };
-
-                let resolved_version = match dep.version {
-                    Some(v) => v,
-                    None => get_latest_version(dep_coord).await?
-                };
-
-                queue.push_back((dep_coord.clone(), resolved_version))
-            }
-        }
-    }
-
-    Ok(())
+    // Here we'd traverse child dependencies from our graph
+    // (We'll implement this when we store the full graph)
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
+
+    // Set up our core components
+    let project = Project::find()?;
+    project.ensure_dirs()?;
+
+    let repo = Repository::new(project.repository_dir());
+    let manager = RepositoryManager::new()?;
+    let resolver = DependencyResolver::new(repo.clone(), manager.clone());
+
     let cli = Cli::parse();
     match &cli.command {
-        Commands::Add { coordinate } => {
-            let coord = MavenCoordinate::parse(coordinate)?;
-            let artifacts = fetch_artifact_info(&coord).await?;
+        Commands::Add { coordinate, dev } => {
+            let coord = Coordinate::parse(coordinate)?;
+            println!("resolving dependency {} and its dependencies...", coord);
 
-            if artifacts.is_empty() {
-                anyhow::bail!("no artifacts found for {}", coordinate);
-            }
-
-            let version = match &coord.version {
-                Some(v) => v.clone(),
-                None => artifacts[0].v.clone()
+            // Get the version (either specified or latest)
+            let version = if let Some(v) = coord.version.clone() {
+                v
+            } else {
+                let versions = manager.search_versions(&coord).await?;
+                if versions.is_empty() {
+                    anyhow::bail!("no versions found for {}", coord);
+                }
+                versions[0].clone()
             };
 
-            resolve_dependencies(&coord, &version).await?;
-            println!("resolved all dependencies");
+            // Resolve the complete dependency graph
+            let graph = resolver.resolve(&coord, &version).await?;
+
+            println!("\nResolved dependency tree:");
+            let mut seen = HashSet::new();
+            print_tree(&coord, &version, &mut seen, 0, true);
+
+            println!("\nSuccessfully added {} version {} and its dependencies", coord, version);
+            if *dev {
+                println!("Added as a development dependency");
+            }
         }
 
         Commands::Remove { coordinate } => {
-            println!("removing dependency {}", coordinate);
+            let coord = Coordinate::parse(coordinate)?;
+            if let Some(version) = &coord.version {
+                repo.remove_artifacts(&coord, version)?;
+                println!("removed {} version {}", coord, version);
+            } else {
+                for version in repo.list_versions(&coord)? {
+                    repo.remove_artifacts(&coord, &version)?;
+                }
+                println!("removed all versions of {}", coord);
+            }
+        }
+
+        Commands::List { coordinate } => {
+            let coord = Coordinate::parse(coordinate)?;
+            let versions = repo.list_versions(&coord)?;
+            if versions.is_empty() {
+                println!("no versions of {} found locally", coord);
+            } else {
+                println!("installed versions of {}:", coord);
+                for version in versions {
+                    println!("  {}", version);
+                }
+            }
+        }
+
+        Commands::Search { coordinate } => {
+            let coord = Coordinate::parse(coordinate)?;
+            let versions = manager.search_versions(&coord).await?;
+            if versions.is_empty() {
+                println!("no versions found for {}", coord);
+            } else {
+                println!("available versions of {}:", coord);
+                for version in versions {
+                    println!("  {}", version);
+                }
+            }
+        }
+
+        Commands::Tree { detailed } => {
+            println!("dependency tree for current project:");
+            // TODO: Read project's direct dependencies and show full tree
+            println!("(tree visualization coming soon)");
         }
     }
     Ok(())
