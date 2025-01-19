@@ -1,10 +1,10 @@
 use std::collections::{HashMap, HashSet, VecDeque};
-use semver::{Version, VersionReq};
 use serde::Deserialize;
 
 use crate::coordinates::Coordinate;
 use crate::download::RepositoryManager;
 use crate::repository::{Repository, ArtifactKind};
+use crate::version::{MavenVersion, VersionReq};
 
 #[derive(Debug, Clone)]
 pub struct DependencyRequest {
@@ -15,18 +15,9 @@ pub struct DependencyRequest {
 
 #[derive(Debug, Default)]
 pub struct DependencyGraph {
-    resolved: HashMap<Coordinate, String>,
+    pub resolved: HashMap<Coordinate, MavenVersion>,
     requirements: HashMap<Coordinate, HashSet<VersionReq>>,
-    edges: HashMap<Coordinate, HashSet<Coordinate>>,
-}
-
-
-fn maven_to_semver(version: &str) -> String {
-    if let Some(idx) = version.find('-') {
-        format!("{}+maven.{}", &version[..idx], &version[idx + 1..])
-    } else {
-        version.to_string()
-    }
+    pub edges: HashMap<Coordinate, HashSet<Coordinate>>,
 }
 
 impl DependencyGraph {
@@ -48,13 +39,16 @@ impl DependencyGraph {
             .insert(to.clone());
     }
 
-    pub fn check_version_compatibility(&self, coord: &Coordinate, version: &str) -> bool {
+    pub fn check_version_compatibility(&self, coord: &Coordinate, version: &MavenVersion) -> bool {
         if let Some(reqs) = self.requirements.get(coord) {
-            let semver = Version::parse(version).unwrap();
-            reqs.iter().all(|req| req.matches(&semver))
+            reqs.iter().all(|req| req.matches(version))
         } else {
             true
         }
+    }
+
+    pub fn add_resolution(&mut self, coord: Coordinate, version: MavenVersion) {
+        self.resolved.insert(coord, version);
     }
 }
 
@@ -62,7 +56,6 @@ pub trait MetadataParser {
     fn parse_dependencies(&self, content: &str) -> anyhow::Result<Vec<DependencyRequest>>;
 }
 
-// Maven specific
 pub struct PomParser;
 
 impl MetadataParser for PomParser {
@@ -91,10 +84,9 @@ impl MetadataParser for PomParser {
         }
 
         let project: Project = quick_xml::de::from_str(content)?;
-
         let mut requests = Vec::new();
+
         for dep in project.dependencies.dependency {
-            // Skip test dependencies
             if dep.scope.as_deref() == Some("test") {
                 continue;
             }
@@ -105,10 +97,9 @@ impl MetadataParser for PomParser {
                 version: None,
             };
 
-            // Convert maven version to semver-compatible format
             let version_req = match dep.version {
-                Some(v) => VersionReq::parse(&maven_to_semver(&v))?,
-                None => VersionReq::parse("*")?, // Any version
+                Some(v) => VersionReq::parse(&v)?,
+                None => VersionReq::Latest,
             };
 
             requests.push(DependencyRequest {
@@ -142,52 +133,48 @@ impl DependencyResolver {
         let mut queue = VecDeque::new();
         let mut seen = HashSet::new();
 
-        // Start with the root dependency
-        queue.push_back((root_coord.clone(), version.to_string()));
+        let root_version = version.parse::<MavenVersion>()?;
+        queue.push_back((root_coord.clone(), root_version));
 
-        // Process dependencies breadth-first
         while let Some((coord, version)) = queue.pop_front() {
-            let key = format!("{}:{}", coord, version);
+            let key = format!("{}:{:?}", coord, version);
             if seen.contains(&key) {
                 continue;
             }
             seen.insert(key);
 
-            // Download and store the dependency if we don't have it
-            if !self.repo.has_artifact(&coord, &version, ArtifactKind::Binary) {
-                let jar = self.manager.download_jar(&coord, &version).await?;
-                self.repo.store_artifact(&coord, &version, ArtifactKind::Binary, jar).await?;
+            if !self.repo.has_artifact(&coord, &version.to_string(), ArtifactKind::Binary) {
+                let jar = self.manager.download_jar(&coord, &version.to_string()).await?;
+                self.repo.store_artifact(&coord, &version.to_string(), ArtifactKind::Binary, jar).await?;
             }
 
-            // Get or download metadata
-            let metadata = if self.repo.has_artifact(&coord, &version, ArtifactKind::Metadata) {
-                String::from_utf8(self.repo.load_artifact(&coord, &version, ArtifactKind::Metadata)?)?
+            let metadata = if self.repo.has_artifact(&coord, &version.to_string(), ArtifactKind::Metadata) {
+                String::from_utf8(self.repo.load_artifact(&coord, &version.to_string(), ArtifactKind::Metadata)?)?
             } else {
-                let metadata = self.manager.download_metadata(&coord, &version).await?;
-                self.repo.store_artifact(&coord, &version, ArtifactKind::Metadata, metadata.as_bytes()).await?;
+                let metadata = self.manager.download_metadata(&coord, &version.to_string()).await?;
+                self.repo.store_artifact(&coord, &version.to_string(), ArtifactKind::Metadata, metadata.as_bytes()).await?;
                 metadata
             };
 
-            // Parse dependencies from metadata
             let deps = self.parser.parse_dependencies(&metadata)?;
 
-            // Process each dependency
             for dep in deps {
                 graph.add_requirement(&dep.coordinate, dep.version_req.clone());
                 graph.add_edge(&coord, &dep.coordinate);
 
-                // Find a version that satisfies all requirements
                 let available_versions = self.manager.search_versions(&dep.coordinate).await?;
                 let mut compatible_version = None;
 
                 for v in available_versions {
-                    if graph.check_version_compatibility(&dep.coordinate, &v) {
-                        compatible_version = Some(v);
+                    let maven_version: MavenVersion = v.parse()?;
+                    if graph.check_version_compatibility(&dep.coordinate, &maven_version) {
+                        compatible_version = Some(maven_version);
                         break;
                     }
                 }
 
                 if let Some(v) = compatible_version {
+                    graph.add_resolution(dep.coordinate.clone(), v.clone());
                     queue.push_back((dep.coordinate.clone(), v));
                 } else {
                     anyhow::bail!("no compatible version found for {}", dep.coordinate);
