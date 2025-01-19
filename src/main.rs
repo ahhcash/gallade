@@ -3,6 +3,7 @@ mod projects;
 mod repository;
 mod download;
 mod resolver;
+mod version;
 
 use clap::{Parser, Subcommand};
 use coordinates::Coordinate;
@@ -40,7 +41,6 @@ enum Commands {
     },
 }
 
-// Helper function to print a dependency tree
 fn print_tree(
     coord: &Coordinate,
     version: &str,
@@ -51,18 +51,14 @@ fn print_tree(
     let key = format!("{}:{}", coord, version);
     let prefix = "  ".repeat(depth);
 
-    // Print with or without version based on detailed flag
     if detailed {
         println!("{}{}:{}", prefix, coord, version);
     } else {
         println!("{}{}", prefix, coord);
     }
 
-    // Track what we've seen to handle cycles
     seen.insert(key);
 
-    // Here we'd traverse child dependencies from our graph
-    // (We'll implement this when we store the full graph)
 }
 
 #[tokio::main]

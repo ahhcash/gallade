@@ -20,6 +20,15 @@ pub struct DependencyGraph {
     edges: HashMap<Coordinate, HashSet<Coordinate>>,
 }
 
+
+fn maven_to_semver(version: &str) -> String {
+    if let Some(idx) = version.find('-') {
+        format!("{}+maven.{}", &version[..idx], &version[idx + 1..])
+    } else {
+        version.to_string()
+    }
+}
+
 impl DependencyGraph {
     pub fn new() -> Self {
         Self::default()
@@ -98,7 +107,7 @@ impl MetadataParser for PomParser {
 
             // Convert maven version to semver-compatible format
             let version_req = match dep.version {
-                Some(v) => VersionReq::parse(&v)?,
+                Some(v) => VersionReq::parse(&maven_to_semver(&v))?,
                 None => VersionReq::parse("*")?, // Any version
             };
 

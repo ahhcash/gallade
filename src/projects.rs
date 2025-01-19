@@ -1,23 +1,29 @@
+use std::fmt::Debug;
+use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-pub trait BuildSystem {
-    fn detect(path: &Path) -> bool;
-    fn get_build_file(path: &Path) -> PathBuf;
-    fn get_dependencies(path: &Path) -> anyhow::Result<Vec<String>>;
+pub trait BuildSystem: Debug {
+    fn detect(&self, path: &Path) -> bool;
+    fn get_build_file(&self, path: &Path) -> PathBuf;
+    fn get_dependencies(&self, path: &Path) -> anyhow::Result<Vec<String>>;
 }
 
+#[derive(Debug)]
 pub struct MavenBuildSystem;
 
 impl BuildSystem for MavenBuildSystem {
-    fn detect(path: &Path) -> bool {
+
+    // static method
+    fn detect(&self, path: &Path) -> bool {
         path.join("pom.xml").exists()
     }
 
-    fn get_build_file(path: &Path) -> PathBuf {
+    fn get_build_file(&self, path: &Path) -> PathBuf {
         path.join("pom.xml")
     }
 
-    fn get_dependencies(path: &Path) -> anyhow::Result<Vec<String>> {
+    fn get_dependencies(&self, path: &Path) -> anyhow::Result<Vec<String>> {
         todo!()
     }
 }
@@ -25,7 +31,7 @@ impl BuildSystem for MavenBuildSystem {
 #[derive(Debug)]
 pub struct Project {
     root: PathBuf,
-    build_system: Box<dyn BuildSystem>,
+    build_system: Arc<dyn BuildSystem>,
 }
 
 impl Project {
@@ -33,8 +39,8 @@ impl Project {
         let current_dir = std::env::current_dir()?;
         let mut current = current_dir.as_path();
 
-        let build_systems: Vec<Box<dyn BuildSystem>> = vec![
-            Box::new(MavenBuildSystem)
+        let build_systems: Vec<Arc<dyn BuildSystem>> = vec![
+            Arc::new(MavenBuildSystem)
         ];
 
         loop {
@@ -83,8 +89,7 @@ mod tests {
     fn test_maven_detection() {
         let temp = TempDir::new().unwrap();
         File::create(temp.path().join("pom.xml")).unwrap();
-
-        assert!(MavenBuildSystem::detect(temp.path()));
+        assert!(MavenBuildSystem::detect(&MavenBuildSystem{}, temp.path()));
     }
 
     #[test]
@@ -94,7 +99,7 @@ mod tests {
 
         let project = Project {
             root: temp.path().to_path_buf(),
-            build_system: Box::new(MavenBuildSystem),
+            build_system: Arc::new(MavenBuildSystem),
         };
 
         assert_eq!(project.gallade_dir(), temp.path().join(".gallade"));

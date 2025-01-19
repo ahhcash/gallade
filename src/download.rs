@@ -1,4 +1,6 @@
 use std::collections::HashSet;
+use std::future::Future;
+use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use reqwest::Client;
@@ -24,12 +26,14 @@ pub struct ArtifactDoc {
     pub timestamp: i64,
 }
 
-pub trait ArtifactRepository {
+#[async_trait::async_trait]
+pub trait ArtifactRepository: Send + Sync {
     fn name(&self) -> &str;
-    fn search(&self, coord: &Coordinate) -> impl std::future::Future<Output = anyhow::Result<Vec<String>>> + Send;
-    fn fetch_jar(&self, coord: &Coordinate, version: &str) -> impl std::future::Future<Output = anyhow::Result<Vec<u8>>> + Send;
-    fn fetch_metadata(&self, coord: &Coordinate, version: &str) -> impl std::future::Future<Output = anyhow::Result<String>> + Send;
+    async fn search(&self, coord: &Coordinate) -> anyhow::Result<Vec<String>>;
+    async fn fetch_jar(&self, coord: &Coordinate, version: &str) -> anyhow::Result<Vec<u8>>;
+    async fn fetch_metadata(&self, coord: &Coordinate, version: &str) -> anyhow::Result<String>;
 }
+
 
 pub struct MavenCentral {
     client: Client,
@@ -63,6 +67,7 @@ impl MavenCentral {
     }
 }
 
+#[async_trait::async_trait]
 impl ArtifactRepository for MavenCentral {
     fn name(&self) -> &str {
         "MavenCentral"
@@ -112,13 +117,13 @@ impl ArtifactRepository for MavenCentral {
 
 #[derive(Clone)]
 pub struct RepositoryManager {
-    repositories: Vec<Box<dyn ArtifactRepository + Send + Sync>>,
+    repositories: Vec<Arc<dyn ArtifactRepository + Send + Sync>>,
 }
 
 impl RepositoryManager {
     pub fn new() -> anyhow::Result<Self> {
-        let repositories: Vec<Box<dyn ArtifactRepository + Send + Sync>> = vec![
-            Box::new(MavenCentral::new()?)
+        let repositories: Vec<Arc<dyn ArtifactRepository + Send + Sync>> = vec![
+            Arc::new(MavenCentral::new()?)
         ];
 
         Ok(Self { repositories })

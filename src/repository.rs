@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::{PathBuf};
 use std::fs;
 
 use crate::coordinates::Coordinate;
@@ -97,6 +97,7 @@ impl Repository {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
     use super::*;
     use tempfile::TempDir;
 
