@@ -4,6 +4,7 @@ mod repository;
 mod download;
 mod resolver;
 mod version;
+mod lockfile;
 
 use clap::{Parser, Subcommand};
 use coordinates::Coordinate;
