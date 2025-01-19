@@ -13,6 +13,7 @@ use projects::Project;
 use repository::Repository;
 use resolver::DependencyResolver;
 use std::collections::HashSet;
+use crate::lockfile::Lockfile;
 
 #[derive(Parser, Debug)]
 struct Cli {
@@ -80,7 +81,6 @@ async fn main() -> anyhow::Result<()> {
             let coord = Coordinate::parse(coordinate)?;
             println!("resolving dependency {} and its dependencies...", coord);
 
-            // Get the version (either specified or latest)
             let version = if let Some(v) = coord.version.clone() {
                 v
             } else {
@@ -91,7 +91,6 @@ async fn main() -> anyhow::Result<()> {
                 versions[0].clone()
             };
 
-            // Resolve the complete dependency graph
             let graph = resolver.resolve(&coord, &version).await?;
 
             println!("\nResolved dependency tree:");
@@ -99,6 +98,14 @@ async fn main() -> anyhow::Result<()> {
             print_tree(&coord, &version, &mut seen, 0, true);
 
             println!("\nSuccessfully added {} version {} and its dependencies", coord, version);
+            if *dev {
+                println!("Added as a development dependency");
+            }
+
+            let lockfile = Lockfile::from_graph(&graph, &manager).await?;
+            lockfile.write(&project.gallade_dir().join("gallade.lock"))?;
+
+            println!("\nSuccessfully updated gallade.lock");
             if *dev {
                 println!("Added as a development dependency");
             }

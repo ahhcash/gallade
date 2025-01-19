@@ -9,15 +9,15 @@ use crate::version::{MavenVersion, VersionReq};
 #[derive(Debug, Clone)]
 pub struct DependencyRequest {
     pub coordinate: Coordinate,
-    pub version_req: VersionReq,  // Now using our custom VersionReq
+    pub version_req: VersionReq,
     pub scope: Option<String>,
 }
 
 #[derive(Debug, Default)]
 pub struct DependencyGraph {
-    pub(crate) resolved: HashMap<Coordinate, MavenVersion>,  // Now storing MavenVersion
+    pub resolved: HashMap<Coordinate, MavenVersion>,
     requirements: HashMap<Coordinate, HashSet<VersionReq>>,
-    pub(crate) edges: HashMap<Coordinate, HashSet<Coordinate>>,
+    pub edges: HashMap<Coordinate, HashSet<Coordinate>>,
 }
 
 impl DependencyGraph {
@@ -39,7 +39,6 @@ impl DependencyGraph {
             .insert(to.clone());
     }
 
-    // Updated to use our version types
     pub fn check_version_compatibility(&self, coord: &Coordinate, version: &MavenVersion) -> bool {
         if let Some(reqs) = self.requirements.get(coord) {
             reqs.iter().all(|req| req.matches(version))
@@ -47,13 +46,16 @@ impl DependencyGraph {
             true
         }
     }
+
+    pub fn add_resolution(&mut self, coord: Coordinate, version: MavenVersion) {
+        self.resolved.insert(coord, version);
+    }
 }
 
 pub trait MetadataParser {
     fn parse_dependencies(&self, content: &str) -> anyhow::Result<Vec<DependencyRequest>>;
 }
 
-// Maven specific parser
 pub struct PomParser;
 
 impl MetadataParser for PomParser {
@@ -85,7 +87,6 @@ impl MetadataParser for PomParser {
         let mut requests = Vec::new();
 
         for dep in project.dependencies.dependency {
-            // Skip test dependencies
             if dep.scope.as_deref() == Some("test") {
                 continue;
             }
@@ -96,7 +97,6 @@ impl MetadataParser for PomParser {
                 version: None,
             };
 
-            // Parse version requirement if present, default to LATEST
             let version_req = match dep.version {
                 Some(v) => VersionReq::parse(&v)?,
                 None => VersionReq::Latest,
@@ -143,13 +143,11 @@ impl DependencyResolver {
             }
             seen.insert(key);
 
-            // Download and store the dependency if we don't have it
             if !self.repo.has_artifact(&coord, &version.to_string(), ArtifactKind::Binary) {
                 let jar = self.manager.download_jar(&coord, &version.to_string()).await?;
                 self.repo.store_artifact(&coord, &version.to_string(), ArtifactKind::Binary, jar).await?;
             }
 
-            // Get or download metadata
             let metadata = if self.repo.has_artifact(&coord, &version.to_string(), ArtifactKind::Metadata) {
                 String::from_utf8(self.repo.load_artifact(&coord, &version.to_string(), ArtifactKind::Metadata)?)?
             } else {
@@ -158,15 +156,12 @@ impl DependencyResolver {
                 metadata
             };
 
-            // Parse dependencies from metadata
             let deps = self.parser.parse_dependencies(&metadata)?;
 
-            // Process each dependency
             for dep in deps {
                 graph.add_requirement(&dep.coordinate, dep.version_req.clone());
                 graph.add_edge(&coord, &dep.coordinate);
 
-                // Find a version that satisfies all requirements
                 let available_versions = self.manager.search_versions(&dep.coordinate).await?;
                 let mut compatible_version = None;
 
@@ -179,6 +174,7 @@ impl DependencyResolver {
                 }
 
                 if let Some(v) = compatible_version {
+                    graph.add_resolution(dep.coordinate.clone(), v.clone());
                     queue.push_back((dep.coordinate.clone(), v));
                 } else {
                     anyhow::bail!("no compatible version found for {}", dep.coordinate);

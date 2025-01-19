@@ -45,20 +45,17 @@ impl Lockfile {
     ) -> anyhow::Result<Self> {
         let mut lockfile = Self::new();
 
-        // Convert graph nodes to lockfile entries
         for (coord, version) in graph.resolved.iter() {
             // Download jar to compute hash if needed
             let jar = repo_manager.download_jar(coord, &version.to_string()).await?;
 
-            // Compute SHA-256 hash
             let mut hasher = Sha256::new();
             hasher.update(&jar);
-            let hash = format!("sha256:{:x}", hasher.finalize());
+            let hash_bytes = hasher.finalize();
+            let hash = format!("sha256:{}", hex::encode(hash_bytes));
 
-            // Get repository name that provided this package
-            let repo_name = "maven-central"; // TODO: track actual source repo
+            let repo_name = "maven-central";
 
-            // Get direct dependencies
             let deps = graph.edges.get(coord)
                 .map(|deps| {
                     deps.iter()
