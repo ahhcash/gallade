@@ -1,8 +1,11 @@
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::Path;
 use serde::Deserialize;
 
 use crate::coordinates::Coordinate;
 use crate::download::RepositoryManager;
+use crate::lockfile::Lockfile;
+use crate::prune::DependencyPruner;
 use crate::repository::{Repository, ArtifactKind};
 use crate::version::{MavenVersion, VersionReq};
 
@@ -13,11 +16,54 @@ pub struct DependencyRequest {
     pub scope: Option<String>,
 }
 
+
 #[derive(Debug, Default)]
 pub struct DependencyGraph {
     pub resolved: HashMap<Coordinate, MavenVersion>,
     requirements: HashMap<Coordinate, HashSet<VersionReq>>,
     pub edges: HashMap<Coordinate, HashSet<Coordinate>>,
+}
+
+#[derive(Debug, Default)]
+pub struct ReverseDependencyGraph {
+    dependents: HashMap<Coordinate, HashSet<Coordinate>>
+}
+
+impl ReverseDependencyGraph {
+    pub fn from_lockfile(lockfile: &Lockfile) -> Self {
+        let mut graph = Self::default();
+
+        for (coord, info) in &lockfile.deps {
+            let is_depended_by = Coordinate::parse(coord).unwrap();
+            for dep in &info.deps {
+                let dependency = Coordinate::parse(dep).unwrap();
+                graph.add_edge(dependency, is_depended_by.clone());
+            }
+        }
+
+        graph
+    }
+
+    fn add_edge(&mut self, target: Coordinate, dependent: Coordinate) {
+        self.dependents
+            .entry(target)
+            .or_default()
+            .insert(dependent);
+    }
+
+    pub fn has_dependents(&self, coord: &Coordinate) -> bool {
+        self.dependents
+            .get(coord)
+            .map(|deps| !deps.is_empty())
+            .unwrap_or(false)
+    }
+
+    pub fn get_dependents(&self, coord: &Coordinate) -> HashSet<Coordinate> {
+        self.dependents
+            .get(coord)
+            .cloned()
+            .unwrap_or_default()
+    }
 }
 
 impl DependencyGraph {
@@ -47,8 +93,8 @@ impl DependencyGraph {
         }
     }
 
-    pub fn add_resolution(&mut self, coord: Coordinate, version: MavenVersion) {
-        self.resolved.insert(coord, version);
+    pub fn add_resolution(&mut self, coord: &Coordinate, version: MavenVersion) {
+        self.resolved.insert(coord.clone(), version);
     }
 }
 
@@ -134,7 +180,7 @@ impl DependencyResolver {
         let mut seen = HashSet::new();
 
         let root_version = version.parse::<MavenVersion>()?;
-        queue.push_back((root_coord.clone(), root_version));
+        queue.push_back((root_coord.clone(), root_version.clone()));
 
         while let Some((coord, version)) = queue.pop_front() {
             let key = format!("{}:{:?}", coord, version);
@@ -174,7 +220,7 @@ impl DependencyResolver {
                 }
 
                 if let Some(v) = compatible_version {
-                    graph.add_resolution(dep.coordinate.clone(), v.clone());
+                    graph.add_resolution(&dep.coordinate.clone(), v.clone());
                     queue.push_back((dep.coordinate.clone(), v));
                 } else {
                     anyhow::bail!("no compatible version found for {}", dep.coordinate);
@@ -182,7 +228,29 @@ impl DependencyResolver {
             }
         }
 
+        graph.add_resolution(root_coord, root_version);
+
         Ok(graph)
+    }
+
+    pub fn remove(&self, coord: Coordinate, lockfile: &mut Lockfile) -> anyhow::Result<()> {
+        let mut pruner = DependencyPruner::new();
+
+        let coord_str = &coord.to_string();
+        lockfile.deps.remove(&coord.to_string());
+
+        for (coord_str, _) in lockfile.deps.iter() {
+            if let Ok(coord) = Coordinate::parse(coord_str) {
+                pruner.mark_tree(&coord, lockfile);
+            }
+        }
+
+        let to_remove = pruner.get_removable(lockfile);
+        for coord in to_remove {
+            lockfile.deps.remove(&coord.to_string());
+        }
+
+        Ok(())
     }
 }
 

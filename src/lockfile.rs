@@ -9,7 +9,7 @@ use crate::resolver::DependencyGraph;
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Lockfile {
     version: u32,
-    deps: HashMap<String, PackageInfo>
+    pub deps: HashMap<String, PackageInfo>
 }
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -17,7 +17,7 @@ pub struct PackageInfo {
     version: String,
     repository: String,
     integrity: String,
-    deps: Vec<String>
+    pub deps: Vec<String>
 }
 
 impl Lockfile {
@@ -54,11 +54,11 @@ impl Lockfile {
             let hash_bytes = hasher.finalize();
             let hash = format!("sha256:{}", hex::encode(hash_bytes));
 
-            let repo_name = "maven-central";
+            let repo_name = repo_manager.fetch_source_repo(coord).await?;
 
             let deps = graph.edges.get(coord)
-                .map(|deps| {
-                    deps.iter()
+                .map(|dep| {
+                    dep.iter()
                         .map(|d| d.to_string())
                         .collect()
                 })
