@@ -4,6 +4,8 @@ mod repository;
 mod download;
 mod resolver;
 mod version;
+mod lockfile;
+mod prune;
 
 use clap::{Parser, Subcommand};
 use coordinates::Coordinate;
@@ -12,6 +14,7 @@ use projects::Project;
 use repository::Repository;
 use resolver::DependencyResolver;
 use std::collections::HashSet;
+use crate::lockfile::Lockfile;
 
 #[derive(Parser, Debug)]
 struct Cli {
@@ -73,13 +76,13 @@ async fn main() -> anyhow::Result<()> {
     let manager = RepositoryManager::new()?;
     let resolver = DependencyResolver::new(repo.clone(), manager.clone());
 
+
     let cli = Cli::parse();
     match &cli.command {
         Commands::Add { coordinate, dev } => {
             let coord = Coordinate::parse(coordinate)?;
             println!("resolving dependency {} and its dependencies...", coord);
 
-            // Get the version (either specified or latest)
             let version = if let Some(v) = coord.version.clone() {
                 v
             } else {
@@ -90,14 +93,21 @@ async fn main() -> anyhow::Result<()> {
                 versions[0].clone()
             };
 
-            // Resolve the complete dependency graph
             let graph = resolver.resolve(&coord, &version).await?;
 
             println!("\nResolved dependency tree:");
             let mut seen = HashSet::new();
             print_tree(&coord, &version, &mut seen, 0, true);
 
-            println!("\nSuccessfully added {} version {} and its dependencies", coord, version);
+            println!("\nSuccessfully added {} and its dependencies", coord);
+            if *dev {
+                println!("Added as a development dependency");
+            }
+
+            let lockfile = Lockfile::from_graph(&graph, &manager).await?;
+            lockfile.write(&project.gallade_dir().join("gallade.lock"))?;
+
+            println!("\nSuccessfully updated gallade.lock");
             if *dev {
                 println!("Added as a development dependency");
             }
@@ -105,15 +115,41 @@ async fn main() -> anyhow::Result<()> {
 
         Commands::Remove { coordinate } => {
             let coord = Coordinate::parse(coordinate)?;
-            if let Some(version) = &coord.version {
-                repo.remove_artifacts(&coord, version)?;
-                println!("removed {} version {}", coord, version);
+
+            let lockfile_path = project.gallade_dir().join("gallade.lock");
+            let mut lockfile = if lockfile_path.exists() {
+                Lockfile::read(&lockfile_path)?
             } else {
-                for version in repo.list_versions(&coord)? {
-                    repo.remove_artifacts(&coord, &version)?;
-                }
-                println!("removed all versions of {}", coord);
+                anyhow::bail!("no gallade.lock found - nothing to remove");
+            };
+
+            let previous_deps: HashSet<String> = lockfile.deps.keys().cloned().collect();
+
+            if let Err(e) = resolver.remove(coord.clone(), &mut lockfile) {
+                anyhow::bail!("failed to remove {}: {}", coordinate, e);
             }
+
+            lockfile.write(&lockfile_path)?;
+
+            let current_deps: HashSet<String> = lockfile.deps.keys().cloned().collect();
+            let removed_deps = previous_deps.difference(&current_deps);
+
+            let mut cleaned_count = 0;
+            for dep_str in removed_deps {
+                if let Ok(dep_coord) = Coordinate::parse(dep_str) {
+                    if let Some(version) = &dep_coord.version {
+                        repo.remove_artifacts(&dep_coord, version)?;
+                        cleaned_count += 1;
+                    } else {
+                        for version in repo.list_versions(&dep_coord)? {
+                            repo.remove_artifacts(&dep_coord, &version)?;
+                            cleaned_count += 1;
+                        }
+                    }
+                }
+            }
+
+            println!("Removed {} and {} dependent packages", coordinate, cleaned_count - 1);
         }
 
         Commands::List { coordinate } => {

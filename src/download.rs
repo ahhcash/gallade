@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::future::Future;
 use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -161,6 +160,16 @@ impl RepositoryManager {
             }
         }
         anyhow::bail!("could not download metadata from any repository")
+    }
+
+    pub async fn fetch_source_repo(&self, coord: &Coordinate) -> anyhow::Result<String> {
+        for repo in &self.repositories {
+           if repo.search(coord).await.is_ok() {
+               return Ok(repo.name().to_string())
+           }
+        }
+
+        anyhow::bail!("no repository found for coordinate: {}", coord)
     }
 }
 
