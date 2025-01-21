@@ -29,7 +29,7 @@ enum Commands {
         #[arg(short, long)]
         dev: bool,
     },
-    Remove {
+    Del {
         coordinate: String
     },
     List {
@@ -93,6 +93,7 @@ async fn main() -> anyhow::Result<()> {
                 versions[0].clone()
             };
 
+
             let graph = resolver.resolve(&coord, &version).await?;
 
             println!("\nResolved dependency tree:");
@@ -104,7 +105,10 @@ async fn main() -> anyhow::Result<()> {
                 println!("Added as a development dependency");
             }
 
-            let lockfile = Lockfile::from_graph(&graph, &manager).await?;
+            let lockfile_path = project.gallade_dir().join("gallade.lock");
+            let mut lockfile = Lockfile::read(&lockfile_path)?;
+
+            lockfile.merge_graph(&graph, &manager).await?;
             lockfile.write(&project.gallade_dir().join("gallade.lock"))?;
 
             println!("\nSuccessfully updated gallade.lock");
@@ -113,7 +117,7 @@ async fn main() -> anyhow::Result<()> {
             }
         }
 
-        Commands::Remove { coordinate } => {
+        Commands::Del { coordinate } => {
             let coord = Coordinate::parse(coordinate)?;
 
             let lockfile_path = project.gallade_dir().join("gallade.lock");
@@ -149,7 +153,11 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
 
-            println!("Removed {} and {} dependent packages", coordinate, cleaned_count - 1);
+            if cleaned_count > 0 {
+                println!("Removed {} and {} dependent packages", coordinate, cleaned_count - 1);
+            } else {
+                println!("Removed {}", coordinate);
+            }
         }
 
         Commands::List { coordinate } => {

@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
+use log::__private_api::loc;
 use serde::Deserialize;
 
 use crate::coordinates::Coordinate;
@@ -14,13 +15,14 @@ pub struct DependencyRequest {
     pub coordinate: Coordinate,
     pub version_req: VersionReq,
     pub scope: Option<String>,
+    pub depth: usize
 }
 
 
 #[derive(Debug, Default)]
 pub struct DependencyGraph {
     pub resolved: HashMap<Coordinate, MavenVersion>,
-    requirements: HashMap<Coordinate, HashSet<VersionReq>>,
+    requirements: HashMap<Coordinate, Vec<(VersionReq, usize)>>,
     pub edges: HashMap<Coordinate, HashSet<Coordinate>>,
 }
 
@@ -71,11 +73,11 @@ impl DependencyGraph {
         Self::default()
     }
 
-    pub fn add_requirement(&mut self, coord: &Coordinate, req: VersionReq) {
+    pub fn add_requirement(&mut self, coord: &Coordinate, req: VersionReq, depth: usize) {
         self.requirements
             .entry(coord.clone())
             .or_default()
-            .insert(req);
+            .push((req, depth));
     }
 
     pub fn add_edge(&mut self, from: &Coordinate, to: &Coordinate) {
@@ -87,7 +89,12 @@ impl DependencyGraph {
 
     pub fn check_version_compatibility(&self, coord: &Coordinate, version: &MavenVersion) -> bool {
         if let Some(reqs) = self.requirements.get(coord) {
-            reqs.iter().all(|req| req.matches(version))
+            let mut sorted_reqs = reqs.clone();
+            sorted_reqs.sort_by_key(|(_, depth)| *depth);
+
+            let (nearest_req, _) = &sorted_reqs[0];
+
+            nearest_req.matches(version)
         } else {
             true
         }
@@ -152,6 +159,7 @@ impl MetadataParser for PomParser {
                 coordinate: coord,
                 version_req,
                 scope: dep.scope,
+                depth: 0
             });
         }
 
@@ -180,9 +188,9 @@ impl DependencyResolver {
         let mut seen = HashSet::new();
 
         let root_version = version.parse::<MavenVersion>()?;
-        queue.push_back((root_coord.clone(), root_version.clone()));
+        queue.push_back((root_coord.clone(), root_version.clone(), 0));
 
-        while let Some((coord, version)) = queue.pop_front() {
+        while let Some((coord, version, depth)) = queue.pop_front() {
             let key = format!("{}:{:?}", coord, version);
             if seen.contains(&key) {
                 continue;
@@ -202,10 +210,13 @@ impl DependencyResolver {
                 metadata
             };
 
-            let deps = self.parser.parse_dependencies(&metadata)?;
+            let mut deps = self.parser.parse_dependencies(&metadata)?;
+            for dep in &mut deps {
+                dep.depth = depth + 1;
+            }
 
             for dep in deps {
-                graph.add_requirement(&dep.coordinate, dep.version_req.clone());
+                graph.add_requirement(&dep.coordinate, dep.version_req.clone(), dep.depth);
                 graph.add_edge(&coord, &dep.coordinate);
 
                 let available_versions = self.manager.search_versions(&dep.coordinate).await?;
@@ -221,9 +232,9 @@ impl DependencyResolver {
 
                 if let Some(v) = compatible_version {
                     graph.add_resolution(&dep.coordinate.clone(), v.clone());
-                    queue.push_back((dep.coordinate.clone(), v));
+                    queue.push_back((dep.coordinate.clone(), v, dep.depth));
                 } else {
-                    anyhow::bail!("no compatible version found for {}", dep.coordinate);
+                    anyhow::bail!("no compatible version found for {} with version: {:?}", dep.coordinate, dep.version_req);
                 }
             }
         }
@@ -236,16 +247,20 @@ impl DependencyResolver {
     pub fn remove(&self, coord: Coordinate, lockfile: &mut Lockfile) -> anyhow::Result<()> {
         let mut pruner = DependencyPruner::new();
 
-        let coord_str = &coord.to_string();
-        lockfile.deps.remove(&coord.to_string());
+        pruner.mark_tree(&coord, lockfile, true);
 
         for (coord_str, _) in lockfile.deps.iter() {
-            if let Ok(coord) = Coordinate::parse(coord_str) {
-                pruner.mark_tree(&coord, lockfile);
+            if let Ok(c) = Coordinate::parse(coord_str) {
+                if c != coord {
+                    pruner.mark_tree(&coord, lockfile,  false);
+                }
             }
         }
 
-        let to_remove = pruner.get_removable(lockfile);
+        lockfile.deps.remove(&coord.to_string());
+
+        let to_remove = pruner.get_removable();
+
         for coord in to_remove {
             lockfile.deps.remove(&coord.to_string());
         }
