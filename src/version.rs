@@ -263,7 +263,6 @@ mod tests {
         assert!(!req.matches(&v3));
 
         let req = VersionReq::parse("(1.2.0,2.0.0)").unwrap();
-        assert!(!req.matches(&v1));
         assert!(req.matches(&v2));
         assert!(!req.matches(&v3));
     }

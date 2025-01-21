@@ -1,4 +1,4 @@
-use std::path::{PathBuf};
+use std::path::{PathBuf, Path};
 use std::fs;
 
 use crate::coordinates::Coordinate;
@@ -62,13 +62,44 @@ impl Repository {
         Ok(fs::read(path)?)
     }
 
+    // Helper function to check if a directory is empty
+    fn is_dir_empty(path: &Path) -> anyhow::Result<bool> {
+        Ok(fs::read_dir(path)?.next().is_none())
+    }
+
+    // Helper function to remove empty parent directories recursively
+    fn cleanup_empty_dirs(&self, start_path: &Path) -> anyhow::Result<()> {
+        let mut current = PathBuf::from(start_path);
+
+        // Keep going up the tree until we hit the root or a non-empty directory
+        while current.starts_with(&self.root) {
+            if Self::is_dir_empty(&current)? {
+                fs::remove_dir(&current)?;
+                if let Some(parent) = current.parent() {
+                    current = parent.to_path_buf();
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+
+        Ok(())
+    }
+
     pub fn remove_artifacts(&self, coord: &Coordinate, version: &str) -> anyhow::Result<()> {
         let version_dir = self.root
             .join(coord.to_path())
             .join(version);
 
         if version_dir.exists() {
-            fs::remove_dir_all(version_dir)?;
+            fs::remove_dir_all(&version_dir)?;
+
+            // After removing the version directory, clean up empty parent dirs
+            if let Some(coord_dir) = version_dir.parent() {
+                self.cleanup_empty_dirs(coord_dir)?;
+            }
         }
         Ok(())
     }
@@ -97,9 +128,9 @@ impl Repository {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
     use super::*;
     use tempfile::TempDir;
+    use std::fs::File;
 
     #[test]
     fn test_artifact_paths() {
@@ -143,6 +174,32 @@ mod tests {
             repo.load_artifact(&coord, version, ArtifactKind::Binary)?,
             content
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_directory_cleanup() -> anyhow::Result<()> {
+        let temp = TempDir::new()?;
+        let repo = Repository::new(temp.path().to_path_buf());
+
+        // Create a deep directory structure
+        let coord = Coordinate::parse("org.test:test-lib").unwrap();
+        let version = "1.0.0";
+
+        // Create some files
+        let jar_path = repo.get_artifact_path(&coord, version, ArtifactKind::Binary);
+        fs::create_dir_all(jar_path.parent().unwrap())?;
+        fs::write(&jar_path, "test")?;
+
+        // Remove artifacts and verify cleanup
+        repo.remove_artifacts(&coord, version)?;
+
+        // Check that parent directories were removed
+        assert!(!jar_path.exists());
+        assert!(!jar_path.parent().unwrap().exists()); // version dir
+        assert!(!jar_path.parent().unwrap().parent().unwrap().exists()); // artifact dir
+        assert!(!jar_path.parent().unwrap().parent().unwrap().parent().unwrap().exists()); // org dir
 
         Ok(())
     }
