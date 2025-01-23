@@ -3,7 +3,7 @@ use std::fs;
 
 use crate::coordinates::Coordinate;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Repository {
     root: PathBuf,
 }
