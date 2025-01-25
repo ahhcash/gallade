@@ -3,7 +3,7 @@ use std::fs;
 use std::path::Path;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ProjectConfig {
     pub name: String,
     pub version: String,
@@ -11,14 +11,14 @@ pub struct ProjectConfig {
     pub java_version: Option<String>
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct Manifest {
     pub project: ProjectConfig,
     #[serde(default)]
     pub deps: Dependencies,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(untagged)]
 pub enum DepSpec {
     Simple(String),
@@ -28,6 +28,7 @@ pub enum DepSpec {
         optional: bool
     }
 }
+
 
 pub type Dependencies = HashMap<String, DepSpec>;
 
