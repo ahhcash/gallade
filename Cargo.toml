@@ -24,4 +24,6 @@ hex = "0.4.3"
 toml = "0.8.19"
 walkdir = "2.5.0"
 zip = "2.2.2"
+rust-embed = "8.5.0"
+tera = "1.20.0"
 

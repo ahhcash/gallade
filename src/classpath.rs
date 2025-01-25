@@ -1,5 +1,5 @@
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use crate::coordinates::Coordinate;
 use crate::repository::{ArtifactKind, Repository};
 
@@ -12,6 +12,24 @@ pub struct ClasspathBuilder {
     paths: Vec<PathBuf>
 }
 
+
+pub fn resolve_main_class(target_dir: &Path, manifest_main_class: Option<String>) -> anyhow::Result<String> {
+    if let Some(main_class) = manifest_main_class {
+        let class_path = main_class.replace('.', "/") + ".class";
+        let full_path = target_dir.join(&class_path);
+
+        if !full_path.exists() {
+            anyhow::bail!(
+                "Main class '{}' specified in manifest not found at '{}'",
+                main_class,
+                full_path.display()
+            );
+        }
+        return Ok(main_class);
+    }
+
+    anyhow::bail!("No main class specified in manifest")
+}
 
 impl ClasspathBuilder {
     pub fn new(repository: Repository) -> Self {

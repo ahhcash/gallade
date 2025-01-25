@@ -1,11 +1,11 @@
 use std::process::Command;
+use walkdir::WalkDir;
 use crate::classpath::{ClasspathBuilder, JavaEnvironment};
 use crate::coordinates::Coordinate;
 use crate::manifest::Manifest;
 use crate::repository::Repository;
 
 pub struct BuildOptions {
-    pub args: Vec<String>,
     pub debug: bool,
 }
 
@@ -22,6 +22,19 @@ impl Builder {
         }
     }
 
+    fn find_java_files(&self) -> anyhow::Result<Vec<String>> {
+        let src_dir = std::env::current_dir()?.join("src").join("main").join("java");
+
+        let java_files: Vec<String> = WalkDir::new(src_dir)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("java"))
+            .map(|e| e.path().to_string_lossy().into_owned())
+            .collect();
+
+        Ok(java_files)
+    }
+
     pub fn build(&self, options: BuildOptions) -> anyhow::Result<()> {
         let mut cp_builder = ClasspathBuilder::new(self.repository.clone());
 
@@ -36,58 +49,32 @@ impl Builder {
 
         let classpath = cp_builder.build();
 
-        let java_env = JavaEnvironment::new(classpath)?;
+        let java_files = self.find_java_files()?;
+        if java_files.is_empty() {
+            anyhow::bail!("no java source files found in src/main/java");
+        }
 
-        let main_class = self.manifest.project.main_class
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("no main class specified in manifest"))?;
+        let target_dir = std::env::current_dir()?.join("target").join("classes");
+        std::fs::create_dir_all(&target_dir)?;
 
-        let mut cmd = Command::new("java");
+        let mut javac = Command::new("javac");
+        javac.args([
+            "-d", target_dir.to_str().unwrap(),
+            "-cp", &classpath
+        ]);
 
+        // Add debug info if requested
         if options.debug {
-            cmd.arg("-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=5005");
+            javac.arg("-g");
         }
 
-        cmd.arg("-cp")
-            .arg(&java_env.classpath)
-            .arg(main_class);
+        javac.args(&java_files);
 
-        cmd.args(&options.args);
-
-        let status = cmd.status()?;
-
+        let status = javac.status()?;
         if !status.success() {
-            anyhow::bail!("java process failed with status: {}", status);
+            anyhow::bail!("compilation failed with status: {}", status);
         }
 
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::TempDir;
-
-    #[test]
-    fn test_builder_setup() -> anyhow::Result<()> {
-        let temp = TempDir::new()?;
-        let repo = Repository::new(temp.path().to_path_buf());
-
-        let manifest_content = r#"
-            [project]
-            name = "test-project"
-            version = "0.1.0"
-            main_class = "com.example.Main"
-
-            [dependencies]
-            "org.slf4j:slf4j-api" = "1.7.36"
-        "#;
-
-        let manifest: Manifest = toml::from_str(manifest_content)?;
-        let builder = Builder::new(manifest, repo);
-
-        assert_eq!(builder.manifest.project.name, "test-project");
         Ok(())
     }
 }

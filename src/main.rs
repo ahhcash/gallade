@@ -10,6 +10,7 @@ mod manifest;
 mod classpath;
 mod build;
 mod init;
+mod run;
 
 use clap::{Parser, Subcommand};
 use coordinates::Coordinate;
@@ -19,6 +20,8 @@ use repository::Repository;
 use resolver::DependencyResolver;
 use std::collections::HashSet;
 use crate::lockfile::Lockfile;
+use crate::manifest::Manifest;
+use crate::run::{RunOptions, Runner};
 
 #[derive(Parser, Debug)]
 struct Cli {
@@ -49,16 +52,23 @@ enum Commands {
     Build {
         #[arg(short, long)]
         debug: bool,
-        #[arg(last = true)]
-        args: Vec<String>,
     },
     Init {
-        name: String,
-        #[arg(short, long)]
-        main_class: Option<String>,
+        #[arg(long = "groupId")]
+        group_id: String,
+        #[arg(long = "artifactId")]
+        artifact_id: String,
+        #[arg(long = "version", default_value = "1.0.0")]
+        version: String,
         #[arg(short, long)]
         java_version: Option<String>,
     },
+    Run {
+        #[arg(short, long)]
+        debug: bool,
+        #[arg(last = true)]
+        args: Vec<String>
+    }
 }
 
 fn print_tree(
@@ -84,20 +94,22 @@ fn print_tree(
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
-    // Parse CLI commands first, before any project setup
     let cli = Cli::parse();
 
     match &cli.command {
-        Commands::Init { name, main_class, java_version } => {
-            // Init command doesn't need existing project
+        Commands::Init { group_id, artifact_id, version, java_version
+        } => {
             let initializer = init::ProjectInitializer::new(
-                name.clone(),
-                main_class.clone(),
+                group_id.clone(),
+                artifact_id.clone(),
+                version.clone(),
                 java_version.clone(),
             );
 
-            initializer.init(&std::env::current_dir().unwrap().join(name))?;
-            println!("✨ initialized new gallade project: {}", name);
+
+
+            initializer.init(&std::env::current_dir()?)?;
+            println!("✨ initialized new gallade project: {}", artifact_id);
             return Ok(());
         }
         _ => {
@@ -108,9 +120,9 @@ async fn main() -> anyhow::Result<()> {
             let manager = RepositoryManager::new()?;
             let resolver = DependencyResolver::new(repo.clone(), manager.clone());
 
-            match &cli.command {
+            match cli.command {
                 Commands::Add { coordinate, dev } => {
-                    let coord = Coordinate::parse(coordinate)?;
+                    let coord = Coordinate::parse(&coordinate)?;
                     println!("resolving dependency {} and its dependencies...", coord);
 
                     let version = if let Some(v) = coord.version.clone() {
@@ -130,7 +142,7 @@ async fn main() -> anyhow::Result<()> {
                     print_tree(&coord, &version, &mut seen, 0, true);
 
                     println!("\nSuccessfully added {} and its dependencies", coord);
-                    if *dev {
+                    if dev {
                         println!("Added as a development dependency");
                     }
 
@@ -144,7 +156,7 @@ async fn main() -> anyhow::Result<()> {
                 }
 
                 Commands::Del { coordinate } => {
-                    let coord = Coordinate::parse(coordinate)?;
+                    let coord = Coordinate::parse(&coordinate)?;
 
                     let lockfile_path = project.gallade_dir().join("gallade.lock");
                     let mut lockfile = if lockfile_path.exists() {
@@ -187,7 +199,7 @@ async fn main() -> anyhow::Result<()> {
                 }
 
                 Commands::List { coordinate } => {
-                    let coord = Coordinate::parse(coordinate)?;
+                    let coord = Coordinate::parse(&coordinate)?;
                     let versions = repo.list_versions(&coord)?;
                     if versions.is_empty() {
                         println!("no versions of {} found locally", coord);
@@ -200,7 +212,7 @@ async fn main() -> anyhow::Result<()> {
                 }
 
                 Commands::Search { coordinate } => {
-                    let coord = Coordinate::parse(coordinate)?;
+                    let coord = Coordinate::parse(&coordinate)?;
                     let versions = manager.search_versions(&coord).await?;
                     if versions.is_empty() {
                         println!("no versions found for {}", coord);
@@ -218,13 +230,22 @@ async fn main() -> anyhow::Result<()> {
                     println!("(tree visualization coming soon)");
                 }
 
-                Commands::Build { debug, args } => {
+                Commands::Build { debug } => {
                     let manifest = manifest::Manifest::load(&project.root().join("gallade.toml"))?;
                     let builder = build::Builder::new(manifest, repo);
 
                     builder.build(build::BuildOptions {
-                        args: args.clone(),
-                        debug: *debug,
+                        debug,
+                    })?;
+                }
+
+                Commands::Run {debug, args} => {
+                    let manifest = Manifest::load(&project.root().join("gallade.toml"))?;
+                    let runner = Runner::new(manifest, repo);
+
+                    runner.run(RunOptions {
+                        debug,
+                        args: args.clone()
                     })?;
                 }
 
