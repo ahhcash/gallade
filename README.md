@@ -1,6 +1,6 @@
 # gallade 🗡️
 
-A modern, high-performance dependency manager for Java. Inspired by npm's speed and simplicity, gallade aims to make Java dependency management fast and painless.
+A modern, high-performance dependency manager for Java. Inspired by bun's speed and simplicity, gallade aims to make Java dependency management fast and painless.
 
 ## Why Gallade?
 
@@ -45,7 +45,7 @@ gallade run
 
 ## How It Works
 
-Gallade takes inspiration from modern package managers like npm and uv, focusing on speed and simplicity:
+Gallade takes inspiration from modern package managers like bun and uv, focusing on speed and simplicity:
 
 1. Downloads JARs directly from Maven Central
 2. Maintains an efficient local cache
