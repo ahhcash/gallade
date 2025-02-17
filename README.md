@@ -54,7 +54,7 @@ Gallade takes inspiration from modern package managers like bun and uv, focusing
 
 ## Contributing
 
-We welcome contributions! Check out our issues or submit a PR if you'd like to help improve Java dependency management.
+Please open any PR and I'll merge it
 
 ## Acknowledgments
 
@@ -64,5 +64,3 @@ Inspired by uv (Python package manager) and the desire for faster Java dependenc
 
 MIT
 
----
-Built with Rust 🦀
